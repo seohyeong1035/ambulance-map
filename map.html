@@ -1,0 +1,171 @@
+<!doctype html>
+<meta charset="utf-8"/>
+<title>Ambulance MiniMap (Offline)</title>
+
+<style>
+  html,body{height:100%;margin:0;background:#0b0f14;color:#eee;font-family:sans-serif}
+  #map{position:absolute;inset:0;overflow:hidden}
+
+  /* 타일은 아래 (z=1) */
+  .tile{
+    position:absolute;width:256px;height:256px;
+    image-rendering:pixelated; z-index:1;
+  }
+
+  /* 마커(원) – 타일 위 (z=10) */
+  .mk{
+    position:absolute;width:18px;height:18px;border-radius:50%;
+    border:3px solid #fff;background:#18d6ff;box-shadow:0 0 8px #0cf;
+    transform:translate(-50%,-50%); z-index:10;
+  }
+
+  /* 진행방향 삼각형 – 마커보다 위 (z=11) */
+  #head{
+    position:absolute;width:0;height:0;
+    border-left:8px solid transparent;border-right:8px solid transparent;border-bottom:12px solid #18d6ff;
+    transform:translate(-50%,-170%); z-index:11;
+  }
+
+.rx{position:absolute;width:16px;height:16px;border:3px solid #fff;background:#00e676;box-shadow:0 0 8px #0f0;border-radius:50%;transform:translate(-50%,-50%); z-index:12;}
+.rxlabel{position:absolute;font-size:12px;color:#fff;text-shadow:0 0 4px #000;transform:translate(-50%,-160%); z-index:12;}
+
+
+  #hud{
+    position:fixed;left:12px;top:12px;padding:8px 10px;border-radius:10px;
+    background:#141a22;box-shadow:0 0 12px #000a;
+  }
+  #alert{
+    position:fixed;left:50%;top:16px;transform:translateX(-50%);
+    padding:10px 16px;border-radius:10px;color:#fff;display:none
+  }
+  .warn{background:#4a0c0c;color:#ffdddd;box-shadow:0 0 12px #f44}
+  .ok{background:#1b3a1b;color:#dfffdc;box-shadow:0 0 10px #3c3}
+  .blink{animation:blink .8s linear infinite}
+  @keyframes blink{50%{box-shadow:0 0 18px 4px #f33}}
+</style>
+
+<div id="map"></div>
+<div id="hud">—</div>
+<div id="alert">—</div>
+
+<script>
+const TILE=256, ZOOM=15;  // tiles.json 의 min/max에 맞춰 사용
+const RCV = { lat: 35.8879, lon: 128.6118 };
+const map = document.getElementById('map'),
+      hud = document.getElementById('hud'),
+      alertBox = document.getElementById('alert');
+
+let tiles = [];
+let amb = {lat:35.87, lon:128.60, speed:0, heading:0, emergency:0, rssi:-99, approaching:0};
+
+function lon2x(lon,z){ return (lon+180)/360*Math.pow(2,z); }
+function lat2y(lat,z){
+  const r = lat * Math.PI / 180;
+  const n = Math.pow(2, z);
+  let y = (1 - Math.log(Math.tan(r) + 1/Math.cos(r)) / Math.PI) / 2 * n;
+  return Math.floor(y);
+}
+
+
+function ensureMarker() {
+  let mk = document.getElementById('mk');
+  if (!mk) { mk = document.createElement('div'); mk.id='mk'; mk.className='mk'; map.appendChild(mk); }
+  let head = document.getElementById('head');
+  if (!head) { head = document.createElement('div'); head.id='head'; map.appendChild(head); }
+  // 항상 맨 위로
+
+ // 수신부(고정) 마커 + 라벨
+  let rx = document.getElementById('rx');
+  if (!rx) { rx = document.createElement('div'); rx.id='rx'; rx.className='rx'; map.appendChild(rx); }
+  let rxlb = document.getElementById('rxlabel');
+  if (!rxlb) { rxlb = document.createElement('div'); rxlb.id='rxlabel'; rxlb.className='rxlabel'; rxlb.textContent='YOU'; map.appendChild(rxlb); }
+
+[mk, head, rx, rxlb].forEach(el => map.appendChild(el));
+
+  map.appendChild(mk);
+  map.appendChild(head);
+}
+
+function redraw(){
+  const W=map.clientWidth, H=map.clientHeight;
+  const cx=lon2x(amb.lon,ZOOM), cy=lat2y(amb.lat,ZOOM);
+  const px=(cx|0), py=(cy|0), fx=(cx-px), fy=(cy-py);
+  const cols=Math.ceil(W/TILE)+2, rows=Math.ceil(H/TILE)+2;
+  const startX=px - (cols>>1), startY=py - (rows>>1);
+
+  // 타일 재구성
+  tiles.forEach(t=>t.remove()); tiles=[];
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      const x=startX+c, y=startY+r;
+      const left=Math.round(c*TILE - (fx*TILE - W/2 + TILE/2));
+      const top =Math.round(r*TILE - (fy*TILE - H/2 + TILE/2));
+      const img=document.createElement('img');
+      img.className='tile';
+      img.style.left=left+'px';
+      img.style.top =top +'px';
+      img.src=`http://localhost:8000/tiles/${ZOOM}/${x}/${y}.png`;
+      tiles.push(img); map.appendChild(img);
+    }
+  }
+
+  // 마커 보장 & 맨 위로
+  ensureMarker();
+
+  const mk   = document.getElementById('mk');
+  const head = document.getElementById('head');
+
+  // 화면 중앙 배치
+  mk.style.left   = (W/2) + 'px';
+  mk.style.top    = (H/2) + 'px';
+  head.style.left = (W/2) + 'px';
+  head.style.top  = (H/2) + 'px';
+  head.style.transform = `translate(-50%,-170%) rotate(${amb.heading}deg)`;
+
+  mk.className = 'mk' + (amb.emergency ? ' blink' : '');
+
+// 수신부(고정) 위치를 픽셀 좌표로 (구급차 중심 기준 오프셋)
+  const rxPx = W/2 + (lon2x(RCV.lon, ZOOM) - cx) * TILE;
+  const rxPy = H/2 + (lat2y(RCV.lat, ZOOM) - cy) * TILE;
+  const rx   = document.getElementById('rx');
+  const rxlb = document.getElementById('rxlabel');
+  rx.style.left   = rxPx + 'px';
+  rx.style.top    = rxPy + 'px';
+  rxlb.style.left = rxPx + 'px';
+  rxlb.style.top  = rxPy + 'px';
+
+  // HUD
+  hud.innerHTML = `AMB lat ${amb.lat.toFixed(6)} / lon ${amb.lon.toFixed(6)}
+    <br>speed ${amb.speed.toFixed(1)} km/h, head ${amb.heading.toFixed(1)}°
+    <br>rssi ${amb.rssi} dBm ${amb.approaching?'(approaching)':''} ${amb.emergency?'<b style="color:#ff0">EMERGENCY</b>':''}`;
+
+  // 경고 표시
+  if (amb.emergency || amb.approaching) {
+    alertBox.style.display='block';
+    alertBox.className = 'warn blink';
+    alertBox.textContent = 'EMERGENCY VEHICLE APPROACHING';
+  } else {
+    alertBox.style.display='none';
+  }
+}
+
+async function poll(){
+  try{
+    const r=await fetch('state.json?_='+Date.now());
+    if(r.ok){
+      const s=await r.json();
+
+      amb.lat=s.lat; amb.lon=s.lon; amb.speed=s.speed; amb.heading=s.heading;
+      amb.emergency=!!s.emergency; amb.rssi=s.rssi; amb.approaching=!!s.approaching;
+console.log("현재 좌표:", amb.lat, amb.lon, "시간:", new Date().toLocaleTimeString());     
+ redraw();
+    }
+  }catch(e){
+    // 네트워크 일시 오류는 무시
+  }
+  setTimeout(poll, 500);
+}
+
+window.addEventListener('resize', redraw);
+redraw(); poll();
+</script>

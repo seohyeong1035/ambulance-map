@@ -10,4 +10,4 @@ ambulance-map/
 │   ├── sender.ino
 │   └── receiver.ino
 └── README.md
-```bash
+```

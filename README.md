@@ -7,7 +7,7 @@ ambulance-map/
 │   ├── requirements.txt
 │   └── state.json
 ├── arduino/
-│   ├── sender.ino
-│   └── receiver.ino
+│   ├── TX.ino
+│   └── RX.ino
 └── README.md
 ```
